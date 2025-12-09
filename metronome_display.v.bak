@@ -1,0 +1,194 @@
+// Top-level module: Metronome with BPM display
+module metronome_display(
+    input wire clk,         // FPGA clock, pin 23
+    input wire reset_n,     // Active low reset, pin 25
+    input wire key_inc_n,   // KEY1, active low, pin 88
+    input wire key_dec_n,   // KEY2, active low, pin 89
+    output wire beep_n,     // Buzzer, active low, pin 110
+    output wire [3:0] dig,  // Digit select (active low)
+    output wire [7:0] seg   // Segments (active low)
+);
+
+    // BPM value from metronome
+    wire [7:0] bpm;
+    
+    // Instantiate metronome module
+    metronome metro (
+        .clk(clk),
+        .reset_n(reset_n),
+        .key_inc_n(key_inc_n),
+        .key_dec_n(key_dec_n),
+        .beep_n(beep_n),
+        .bpm_out(bpm)  // Export BPM value
+    );
+    
+    // Instantiate 7-segment display module
+    seg7_display display (
+        .clk(clk),
+        .rst_n(reset_n),
+        .display_value(bpm),
+        .dig(dig),
+        .seg(seg)
+    );
+
+endmodule
+
+// Metronome module (modified to export BPM)
+module metronome(
+    input wire clk,
+    input wire reset_n,
+    input wire key_inc_n,
+    input wire key_dec_n,
+    output reg beep_n,
+    output wire [7:0] bpm_out  // Export BPM value
+);
+    parameter CLK_FREQ = 50000000; // 50 MHz
+    parameter MIN_BPM = 40;
+    parameter MAX_BPM = 240;
+    
+    // BPM and tick
+    reg [7:0] bpm = 120;
+    reg [31:0] tick_counter = 0;
+    reg [31:0] tick_threshold = 0;
+    
+    // Export BPM to display
+    assign bpm_out = bpm;
+    
+    // Buzzer pulse width (~5 ms)
+    reg [18:0] buzz_counter = 0;
+    reg buzz_active = 0;
+    
+    // Button debouncing
+    reg [15:0] key_inc_db = 16'hFFFF;
+    reg [15:0] key_dec_db = 16'hFFFF;
+    
+    always @(posedge clk or negedge reset_n) begin
+        if (!reset_n) begin
+            bpm <= 120;
+            tick_counter <= 0;
+            tick_threshold <= CLK_FREQ * 60 / bpm;
+            beep_n <= 1;
+            buzz_counter <= 0;
+            buzz_active <= 0;
+            key_inc_db <= 16'hFFFF;
+            key_dec_db <= 16'hFFFF;
+        end else begin
+            // --------------------------
+            // Simple debounce for keys
+            // --------------------------
+            key_inc_db <= {key_inc_db[14:0], key_inc_n};
+            key_dec_db <= {key_dec_db[14:0], key_dec_n};
+            if (&key_inc_db == 0 && bpm < MAX_BPM) bpm <= bpm + 1;
+            if (&key_dec_db == 0 && bpm > MIN_BPM) bpm <= bpm - 1;
+            
+            // --------------------------
+            // Update tick threshold
+            // --------------------------
+            tick_threshold <= CLK_FREQ * 60 / bpm;
+            
+            // --------------------------
+            // Tick counter
+            // --------------------------
+            if (tick_counter >= tick_threshold) begin
+                tick_counter <= 0;
+                buzz_active <= 1;
+                buzz_counter <= 0;
+            end else begin
+                tick_counter <= tick_counter + 1;
+            end
+            
+            // --------------------------
+            // Buzzer pulse generation (~5ms)
+            // --------------------------
+            if (buzz_active) begin
+                if (buzz_counter < 250000) begin  // 50MHz * 5ms = 250k cycles
+                    beep_n <= 0;                 // active low
+                    buzz_counter <= buzz_counter + 1;
+                end else begin
+                    beep_n <= 1;
+                    buzz_active <= 0;
+                end
+            end else begin
+                beep_n <= 1;
+            end
+        end
+    end
+endmodule
+
+// 7-segment display module (modified to take dynamic input)
+module seg7_display (
+    input wire clk,
+    input wire rst_n,
+    input wire [7:0] display_value,  // BPM value to display (0-255)
+    output reg [3:0] dig,
+    output reg [7:0] seg
+);
+    
+    // Digit separation
+    wire [3:0] digit0, digit1, digit2, digit3;
+    assign digit0 = display_value % 10;           // Ones
+    assign digit1 = (display_value / 10) % 10;    // Tens
+    assign digit2 = (display_value / 100) % 10;   // Hundreds
+    assign digit3 = 4'd0;                         // Always 0 for BPM range
+    
+    // Multiplexing counter (scan through digits)
+    reg [15:0] refresh_counter;
+    reg [1:0] digit_select;
+    
+    // Clock divider for refresh rate (~190Hz per digit, ~760Hz total)
+    always @(posedge clk or negedge rst_n) begin
+        if (!rst_n) begin
+            refresh_counter <= 0;
+            digit_select <= 0;
+        end else begin
+            refresh_counter <= refresh_counter + 1;
+            if (refresh_counter == 0) begin
+                digit_select <= digit_select + 1;
+            end
+        end
+    end
+    
+    // Current digit value
+    reg [3:0] current_digit;
+    
+    // Select which digit to display
+    always @(*) begin
+        case (digit_select)
+            2'b00: begin
+                dig = 4'b1110;  // Active low - digit 1 (rightmost)
+                current_digit = digit0;
+            end
+            2'b01: begin
+                dig = 4'b1101;  // Active low - digit 2
+                current_digit = digit1;
+            end
+            2'b10: begin
+                dig = 4'b1011;  // Active low - digit 3
+                current_digit = digit2;
+            end
+            2'b11: begin
+                dig = 4'b0111;  // Active low - digit 4 (leftmost)
+                current_digit = digit3;
+            end
+        endcase
+    end
+    
+    // 7-segment decoder (active low)
+    // Segment mapping: {DP, G, F, E, D, C, B, A}
+    always @(*) begin
+        case (current_digit)
+            4'd0: seg = 8'b11000000;  // 0
+            4'd1: seg = 8'b11111001;  // 1
+            4'd2: seg = 8'b10100100;  // 2
+            4'd3: seg = 8'b10110000;  // 3
+            4'd4: seg = 8'b10011001;  // 4
+            4'd5: seg = 8'b10010010;  // 5
+            4'd6: seg = 8'b10000010;  // 6
+            4'd7: seg = 8'b11111000;  // 7
+            4'd8: seg = 8'b10000000;  // 8
+            4'd9: seg = 8'b10010000;  // 9
+            default: seg = 8'b11111111;  // Blank
+        endcase
+    end
+
+endmodule

@@ -1,0 +1,16 @@
+Fitter Status : Successful - Wed Nov 19 15:10:02 2025
+Quartus Prime Version : 24.1std.0 Build 1077 03/04/2025 SC Lite Edition
+Revision Name : metronome
+Top-level Entity Name : metronome_display
+Family : Cyclone IV E
+Device : EP4CE6E22C6
+Timing Models : Final
+Total logic elements : 1,244 / 6,272 ( 20 % )
+    Total combinational functions : 1,185 / 6,272 ( 19 % )
+    Dedicated logic registers : 260 / 6,272 ( 4 % )
+Total registers : 260
+Total pins : 23 / 92 ( 25 % )
+Total virtual pins : 0
+Total memory bits : 0 / 276,480 ( 0 % )
+Embedded Multiplier 9-bit elements : 0 / 30 ( 0 % )
+Total PLLs : 0 / 2 ( 0 % )

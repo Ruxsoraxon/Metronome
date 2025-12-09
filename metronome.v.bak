@@ -1,0 +1,410 @@
+// metronome.v
+// Simple metronome core for Omdazz Cyclone IV board (EP4CE6E22C8N)
+// - Buttons are active-low on the board, LEDs/segments are active-low.
+// - Parameterize CLK_FREQ to match board clock (default 50_000_000).
+// Ports names chosen to match the .qsf below (use same top-level names).
+
+module metronome #(
+    parameter integer CLK_FREQ = 50000000  // set to your board clock (Hz)
+)(
+    input  wire FPGA_CLK,    // PIN_23
+    input  wire RESET,       // PIN_25 active low on board? (we treat as synchronous active-high reset)
+    input  wire KEY1,        // PIN_88  (increase)
+    input  wire KEY2,        // PIN_89  (decrease)
+    input  wire KEY3,        // PIN_90  (start/stop)
+    input  wire KEY4,        // PIN_91  (toggle accent)
+    output wire beep,        // PIN_110 (buzzer)
+    output wire led1,        // PIN_87  (active-low LED1)
+    output wire led2,        // PIN_86  (active-low LED2)
+    output wire led3,        // PIN_85  (active-low LED3)
+    output wire led4,        // PIN_84  (active-low LED4) - free
+    output wire SEG0,        // PIN_128 segments (assumed a)
+    output wire SEG1,        // PIN_121 b
+    output wire SEG2,        // PIN_125 c
+    output wire SEG3,        // PIN_129 d
+    output wire SEG4,        // PIN_132 e
+    output wire SEG5,        // PIN_126 f
+    output wire SEG6,        // PIN_124 g
+    output wire SEG7,        // PIN_127 dp (decimal point)
+    output wire DIG1,        // PIN_133 (digit enable 1)
+    output wire DIG2,        // PIN_135
+    output wire DIG3,        // PIN_136
+    output wire DIG4         // PIN_137
+);
+
+// ------------------------------------------------------------------
+// Active-low handling:
+// Buttons on board are active-low: pressed -> 0. Convert to internal active-high pulses.
+// LEDs and 7-seg segments are active-low: to light, drive 0. So we invert at the outputs.
+// ------------------------------------------------------------------
+
+// raw button inputs are active-low; invert for internal active-high logic:
+wire btn_inc_n = KEY1;
+wire btn_dec_n = KEY2;
+wire btn_toggle_n = KEY3;
+wire btn_accent_n = KEY4;
+
+wire btn_inc = ~btn_inc_n;
+wire btn_dec = ~btn_dec_n;
+wire btn_toggle = ~btn_toggle_n;
+wire btn_accent = ~btn_accent_n;
+
+// Synchronous reset (use external RESET as active-high reset if needed).
+wire rst = RESET; // if your board RESET is low-active, invert here: wire rst = ~RESET; 
+
+// ------------------------------------------------------------------
+// Clock / ms tick generator
+// ------------------------------------------------------------------
+localparam integer MS_TICKS = CLK_FREQ / 1000; // clock cycles per millisecond
+
+reg [31:0] ms_div;
+reg ms_tick;
+always @(posedge FPGA_CLK or posedge rst) begin
+    if (rst) begin
+        ms_div <= 0;
+        ms_tick <= 0;
+    end else begin
+        if (ms_div + 1 >= MS_TICKS) begin
+            ms_div <= 0;
+            ms_tick <= 1'b1;
+        end else begin
+            ms_div <= ms_div + 1;
+            ms_tick <= 1'b0;
+        end
+    end
+end
+
+// ------------------------------------------------------------------
+// Debounce + one-pulse (20 ms stable) for each button
+// ------------------------------------------------------------------
+function [0:0] debounce_onepulse;
+    input clk;
+    input rst_f;
+    input sig;
+    input ms;
+    integer i;
+    reg [5:0] cnt;
+    begin
+        // not used as function; implemented below as module-like code
+        debounce_onepulse = 1'b0;
+    end
+endfunction
+
+// We'll implement debounces inline
+reg [7:0] db_inc_cnt, db_dec_cnt, db_tog_cnt, db_acc_cnt;
+reg db_inc, db_dec, db_tog, db_acc;
+reg prev_inc, prev_dec, prev_tog, prev_acc;
+wire p_inc = db_inc & ~prev_inc;
+wire p_dec = db_dec & ~prev_dec;
+wire p_tog = db_tog & ~prev_tog;
+wire p_acc = db_acc & ~prev_acc;
+
+always @(posedge FPGA_CLK or posedge rst) begin
+    if (rst) begin
+        db_inc_cnt <= 0; db_dec_cnt <= 0; db_tog_cnt <= 0; db_acc_cnt <= 0;
+        db_inc <= 0; db_dec <= 0; db_tog <= 0; db_acc <= 0;
+        prev_inc <= 0; prev_dec <= 0; prev_tog <= 0; prev_acc <= 0;
+    end else begin
+        // sample every ms
+        if (ms_tick) begin
+            // INC
+            if (btn_inc) begin
+                if (db_inc_cnt < 200) db_inc_cnt <= db_inc_cnt + 1;
+            end else db_inc_cnt <= 0;
+            db_inc <= (db_inc_cnt >= 20); // stable 20 ms -> pressed
+
+            // DEC
+            if (btn_dec) begin
+                if (db_dec_cnt < 200) db_dec_cnt <= db_dec_cnt + 1;
+            end else db_dec_cnt <= 0;
+            db_dec <= (db_dec_cnt >= 20);
+
+            // TOG (start/stop)
+            if (btn_toggle) begin
+                if (db_tog_cnt < 200) db_tog_cnt <= db_tog_cnt + 1;
+            end else db_tog_cnt <= 0;
+            db_tog <= (db_tog_cnt >= 20);
+
+            // ACCENT toggle
+            if (btn_accent) begin
+                if (db_acc_cnt < 200) db_acc_cnt <= db_acc_cnt + 1;
+            end else db_acc_cnt <= 0;
+            db_acc <= (db_acc_cnt >= 20);
+
+            // one-pulse previous state register
+            prev_inc <= db_inc;
+            prev_dec <= db_dec;
+            prev_tog <= db_tog;
+            prev_acc <= db_acc;
+        end
+    end
+end
+
+// ------------------------------------------------------------------
+// BPM control and play/stop
+// ------------------------------------------------------------------
+reg [9:0] bpm; // allow up to 1023; we'll clamp
+initial bpm = 120;
+
+always @(posedge FPGA_CLK or posedge rst) begin
+    if (rst) begin
+        bpm <= 120;
+    end else begin
+        if (p_inc) begin
+            if (bpm < 300) bpm <= bpm + 1;
+        end
+        if (p_dec) begin
+            if (bpm > 20) bpm <= bpm - 1;
+        end
+    end
+end
+
+// start/stop
+reg running;
+initial running = 1'b0;
+always @(posedge FPGA_CLK or posedge rst) begin
+    if (rst) running <= 1'b0;
+    else if (p_tog) running <= ~running;
+end
+
+// accent toggle (4-beat measure accent on beat 0)
+reg accent_mode;
+initial accent_mode = 1'b1;
+always @(posedge FPGA_CLK or posedge rst) begin
+    if (rst) accent_mode <= 1'b1;
+    else if (p_acc) accent_mode <= ~accent_mode;
+end
+
+// ------------------------------------------------------------------
+// Beat timer (ms resolution). interval_ms = 60000 / bpm
+// ------------------------------------------------------------------
+reg [31:0] beat_ms; // interval in ms
+always @(posedge FPGA_CLK or posedge rst) begin
+    if (rst) beat_ms <= 60000 / 120;
+    else begin
+        // compute with integer math when bpm changes
+        // compute only when bpm changed: simple approach - update continuously
+        beat_ms <= 60000 / (bpm == 0 ? 1 : bpm);
+    end
+end
+
+// ms counter for beat
+reg [31:0] ms_counter;
+reg beat_pulse; // high for one ms tick at beat (synchronous to ms_tick)
+reg [1:0] beat_idx; // 0..3 for measure
+initial beat_idx = 0;
+always @(posedge FPGA_CLK or posedge rst) begin
+    if (rst) begin
+        ms_counter <= 0;
+        beat_pulse <= 0;
+        beat_idx <= 0;
+    end else begin
+        beat_pulse <= 0;
+        if (running) begin
+            if (ms_tick) begin
+                if (ms_counter + 1 >= beat_ms) begin
+                    ms_counter <= 0;
+                    beat_pulse <= 1;
+                    beat_idx <= beat_idx + 1;
+                    if (beat_idx == 2'd3) beat_idx <= 0;
+                end else begin
+                    ms_counter <= ms_counter + 1;
+                end
+            end
+        end else begin
+            ms_counter <= 0;
+            beat_idx <= 0;
+        end
+    end
+end
+
+// ------------------------------------------------------------------
+// Buzzer generation: produce a short square burst on beat
+// accented beats produce longer burst
+// produce 2 kHz tone when active (approx). Use simple toggling at ~2kHz.
+// ------------------------------------------------------------------
+reg [15:0] tone_div;
+reg tone; // toggled tone
+reg [15:0] tone_len_ms; // length of tone in ms remaining
+localparam integer TONE_FREQ = 2000; // 2 kHz
+localparam integer TONE_DIV = CLK_FREQ / (TONE_FREQ * 2); // toggle divider
+
+always @(posedge FPGA_CLK or posedge rst) begin
+    if (rst) begin
+        tone_div <= 0;
+        tone <= 0;
+        tone_len_ms <= 0;
+    end else begin
+        // start tone on beat
+        if (beat_pulse) begin
+            if (accent_mode && beat_idx == 0) tone_len_ms <= 80; // accent: 80 ms
+            else tone_len_ms <= 40; // normal: 40 ms
+        end
+
+        if (tone_len_ms > 0) begin
+            // tone toggling at TONE_FREQ
+            if (tone_div + 1 >= TONE_DIV) begin
+                tone_div <= 0;
+                tone <= ~tone;
+            end else tone_div <= tone_div + 1;
+
+            // decrease ms counter synchronously with ms_tick
+            if (ms_tick) tone_len_ms <= tone_len_ms - 1;
+        end else begin
+            tone <= 0;
+            tone_div <= 0;
+        end
+    end
+end
+
+// beep is active-high internal; board buzzer pin might be active-high. If buzzer is active-low,
+// invert in .qsf mapping or here. We'll output `beep` active-high.
+assign beep = tone;
+
+// ------------------------------------------------------------------
+// LEDs (active-low on board). Provide internal leds active-high then invert at top outputs.
+// led1: accent beat, led2: regular beat pulse, led3: running indicator, led4: unused
+// We'll create 1 ms wide flashes on beat for leds
+// ------------------------------------------------------------------
+reg led1_i, led2_i, led3_i, led4_i;
+reg [7:0] led1_ms, led2_ms;
+always @(posedge FPGA_CLK or posedge rst) begin
+    if (rst) begin
+        led1_i <= 0; led2_i <= 0; led3_i <= 0; led4_i <= 0;
+        led1_ms <= 0; led2_ms <= 0;
+    end else begin
+        // running indicator
+        led3_i <= running;
+
+        if (beat_pulse) begin
+            if (accent_mode && beat_idx == 0) begin
+                led1_ms <= 50; // accent LED on for 50 ms
+            end else begin
+                led2_ms <= 30; // normal LED on for 30 ms
+            end
+        end
+
+        if (ms_tick) begin
+            if (led1_ms > 0) begin led1_ms <= led1_ms - 1; led1_i <= 1; end else led1_i <= 0;
+            if (led2_ms > 0) begin led2_ms <= led2_ms - 1; led2_i <= 1; end else led2_i <= 0;
+        end
+    end
+end
+
+// Top-level outputs (remember board LEDs are active-low)
+assign led1 = ~led1_i;
+assign led2 = ~led2_i;
+assign led3 = ~led3_i;
+assign led4 = ~led4_i;
+
+// ------------------------------------------------------------------
+// 4-digit 7-seg display multiplexing
+// show BPM right-justified
+// Segments mapped: SEG0..SEG6 -> a..g ; SEG7 -> dp
+// Board segments are active-low, so invert before assigning.
+// DIGx are digit enables (active-low on board) so invert as well.
+// ------------------------------------------------------------------
+reg [1:0] scan_idx;
+reg [15:0] scan_ms_cnt;
+localparam integer SCAN_MS = 2; // ~2 ms per digit -> 4 digits -> ~125 Hz refresh
+
+reg [6:0] seg_pattern; // a..g (active-high)
+reg dp_on;
+reg [3:0] digit_en; // internal active-high digit enables
+
+// prepare BCD digits
+wire [11:0] bpm_val = bpm; // we will show up to 3 digits; use 4th as blank
+reg [3:0] digit3, digit2, digit1, digit0; // digit3 is leftmost
+
+always @(*) begin
+    integer tmp;
+    tmp = bpm_val;
+    digit0 = tmp % 10; tmp = tmp / 10;
+    digit1 = tmp % 10; tmp = tmp / 10;
+    digit2 = tmp % 10; tmp = tmp / 10;
+    digit3 = tmp % 10;
+end
+
+// scan timing (use ms_tick to decrement)
+reg [7:0] scan_repeat; // small sub-ms counter
+always @(posedge FPGA_CLK or posedge rst) begin
+    if (rst) begin
+        scan_ms_cnt <= 0;
+        scan_idx <= 0;
+    end else begin
+        // coarse scan: increment on each ms tick
+        if (ms_tick) begin
+            if (scan_ms_cnt + 1 >= SCAN_MS) begin
+                scan_ms_cnt <= 0;
+                scan_idx <= scan_idx + 1;
+            end else scan_ms_cnt <= scan_ms_cnt + 1;
+        end
+    end
+end
+
+// choose digit to display
+reg [3:0] cur_digit;
+always @(*) begin
+    case (scan_idx)
+        2'd0: cur_digit = digit0; // rightmost
+        2'd1: cur_digit = digit1;
+        2'd2: cur_digit = digit2;
+        2'd3: cur_digit = digit3;
+        default: cur_digit = 4'd0;
+    endcase
+end
+
+// bcd -> 7seg (active-high segments: 1 lights segment)
+always @(*) begin
+    dp_on = 1'b0;
+    case (cur_digit)
+        4'd0: seg_pattern = 7'b1111110;
+        4'd1: seg_pattern = 7'b0110000;
+        4'd2: seg_pattern = 7'b1101101;
+        4'd3: seg_pattern = 7'b1111001;
+        4'd4: seg_pattern = 7'b0110011;
+        4'd5: seg_pattern = 7'b1011011;
+        4'd6: seg_pattern = 7'b1011111;
+        4'd7: seg_pattern = 7'b1110000;
+        4'd8: seg_pattern = 7'b1111111;
+        4'd9: seg_pattern = 7'b1111011;
+        default: seg_pattern = 7'b0000000; // blank
+    endcase
+end
+
+// digit enables (we want right-justified: if leading zeros, show blank except rightmost if zero)
+wire blank3 = (digit3 == 0);
+wire blank2 = (digit3 == 0 && digit2 == 0);
+wire blank1 = (digit3 == 0 && digit2 == 0 && digit1 == 0);
+
+always @(*) begin
+    digit_en = 4'b0000;
+    case (scan_idx)
+        2'd0: digit_en = 4'b0001;
+        2'd1: digit_en = 4'b0010;
+        2'd2: digit_en = 4'b0100;
+        2'd3: digit_en = 4'b1000;
+    endcase
+    // blank leading digits: if blank, turn off enable for left digits
+    if (scan_idx == 2'd3 && blank3) digit_en[3] = 1'b0;
+    if (scan_idx == 2'd2 && blank2) digit_en[2] = 1'b0;
+    if (scan_idx == 2'd1 && blank1) digit_en[1] = 1'b0;
+end
+
+// final assignments to physical pins: invert for active-low segments/digits
+assign SEG0 = ~seg_pattern[6]; // mapping a..g to SEG0..SEG6 depends on your wiring; adjust if segments look wrong
+assign SEG1 = ~seg_pattern[5];
+assign SEG2 = ~seg_pattern[4];
+assign SEG3 = ~seg_pattern[3];
+assign SEG4 = ~seg_pattern[2];
+assign SEG5 = ~seg_pattern[1];
+assign SEG6 = ~seg_pattern[0];
+assign SEG7 = ~dp_on;
+
+// DIG pins active-low: 0 enables digit
+assign DIG1 = ~digit_en[3];
+assign DIG2 = ~digit_en[2];
+assign DIG3 = ~digit_en[1];
+assign DIG4 = ~digit_en[0];
+
+endmodule

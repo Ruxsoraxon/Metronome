@@ -1,0 +1,97 @@
+{
+	"partitions" : [
+		{
+			"name" : "Top",
+			"pins" : [
+				{
+					"name" : "beep_n",
+					"strict" : false
+				},
+				{
+					"name" : "led_n[0]",
+					"strict" : false
+				},
+				{
+					"name" : "led_n[1]",
+					"strict" : false
+				},
+				{
+					"name" : "led_n[2]",
+					"strict" : false
+				},
+				{
+					"name" : "led_n[3]",
+					"strict" : false
+				},
+				{
+					"name" : "dig[0]",
+					"strict" : false
+				},
+				{
+					"name" : "dig[1]",
+					"strict" : false
+				},
+				{
+					"name" : "dig[2]",
+					"strict" : false
+				},
+				{
+					"name" : "dig[3]",
+					"strict" : false
+				},
+				{
+					"name" : "seg[0]",
+					"strict" : false
+				},
+				{
+					"name" : "seg[1]",
+					"strict" : false
+				},
+				{
+					"name" : "seg[2]",
+					"strict" : false
+				},
+				{
+					"name" : "seg[3]",
+					"strict" : false
+				},
+				{
+					"name" : "seg[4]",
+					"strict" : false
+				},
+				{
+					"name" : "seg[5]",
+					"strict" : false
+				},
+				{
+					"name" : "seg[6]",
+					"strict" : false
+				},
+				{
+					"name" : "clk",
+					"strict" : false
+				},
+				{
+					"name" : "reset_n",
+					"strict" : false
+				},
+				{
+					"name" : "key_dec_n",
+					"strict" : false
+				},
+				{
+					"name" : "key_inc_n",
+					"strict" : false
+				},
+				{
+					"name" : "key_opt_n",
+					"strict" : false
+				},
+				{
+					"name" : "key_mode_n",
+					"strict" : false
+				}
+			]
+		}
+	]
+}
